@@ -50,4 +50,6 @@ def get_tts_authorization_token() -> str:
 TARGET_DURATION_SECONDS = int(os.environ.get("TARGET_DURATION_SECONDS", "120"))
 MAX_CONCURRENT_TRANSCRIPTIONS = int(os.environ.get("MAX_CONCURRENT_TRANSCRIPTIONS", "6"))
 VIDEO_EXTENSIONS = {'.mp4', '.m4v', '.wmv', '.avi', '.mov'}
+AUDIO_EXTENSIONS = {'.mp3', '.wav', '.m4a', '.wma', '.flac', '.ogg', '.webm'}
+MEDIA_EXTENSIONS = VIDEO_EXTENSIONS | AUDIO_EXTENSIONS
 SUPPORTED_AUDIO_EXTENSIONS = {".mp4", ".mp3", ".wav", ".m4a", ".flac", ".ogg", ".webm"}

@@ -1,9 +1,10 @@
-"""Extract embedded videos from PPTX files.
+"""Extract embedded media (video and audio) from PPTX files.
 
-PPTX is a ZIP archive. Videos live in ppt/media/ and are referenced
+PPTX is a ZIP archive. Media files live in ppt/media/ and are referenced
 by relationship entries in ppt/slides/_rels/slideN.xml.rels.
 """
 
+import logging
 import os
 import shutil
 import tempfile
@@ -13,7 +14,9 @@ from pathlib import Path
 
 from lxml import etree
 
-from config import VIDEO_EXTENSIONS
+from config import MEDIA_EXTENSIONS
+
+log = logging.getLogger(__name__)
 
 _NS = {
     "a": "http://schemas.openxmlformats.org/drawingml/2006/main",
@@ -36,7 +39,7 @@ class VideoInfo:
 def _find_video_rels_on_slide(
     zf: zipfile.ZipFile, slide_name: str
 ) -> list[tuple[str, str]]:
-    """Return (rId, media_target) pairs for video relationships on a slide."""
+    """Return (rId, media_target) pairs for video/audio relationships on a slide."""
     rels_path = slide_name.replace("ppt/slides/", "ppt/slides/_rels/") + ".rels"
     if rels_path not in zf.namelist():
         return []
@@ -47,15 +50,30 @@ def _find_video_rels_on_slide(
         rel_type = rel.get("Type", "")
         target = rel.get("Target", "")
         rid = rel.get("Id", "")
-        if "video" in rel_type.lower() or "media" in rel_type.lower():
+        if "video" in rel_type.lower() or "audio" in rel_type.lower() or "media" in rel_type.lower():
             # Target is relative, e.g. ../media/video1.mp4
             media_path = os.path.normpath(
                 os.path.join(os.path.dirname(slide_name), target)
             ).replace("\\", "/")
             ext = os.path.splitext(media_path)[1].lower()
-            if ext in VIDEO_EXTENSIONS:
+            if ext in MEDIA_EXTENSIONS:
                 results.append((rid, media_path))
     return results
+
+
+def _extract_member(zf: zipfile.ZipFile, member: str, dest: str, pptx_path: str) -> None:
+    """Extract a ZIP member to *dest*, tolerating CRC mismatches."""
+    try:
+        with zf.open(member) as src, open(dest, "wb") as dst:
+            shutil.copyfileobj(src, dst)
+    except zipfile.BadZipFile as exc:
+        log.warning("CRC error extracting %s from %s: %s — extracting without CRC check",
+                     os.path.basename(member), os.path.basename(pptx_path), exc)
+        # Retry with CRC validation disabled by clearing the internal check
+        with zf.open(member) as src:
+            src._expected_crc = None  # disable CRC validation
+            with open(dest, "wb") as dst:
+                shutil.copyfileobj(src, dst)
 
 
 def extract_videos(pptx_path: str, work_dir: str | None = None) -> list[VideoInfo]:
@@ -86,8 +104,7 @@ def extract_videos(pptx_path: str, work_dir: str | None = None) -> list[VideoInf
 
                 media_filename = os.path.basename(media_path)
                 dest = os.path.join(work_dir, media_filename)
-                with zf.open(media_path) as src, open(dest, "wb") as dst:
-                    shutil.copyfileobj(src, dst)
+                _extract_member(zf, media_path, dest, pptx_path)
 
                 videos.append(
                     VideoInfo(
@@ -99,6 +116,35 @@ def extract_videos(pptx_path: str, work_dir: str | None = None) -> list[VideoInf
                 )
 
     return videos
+
+
+def extract_slide_text(
+    pptx_path: str, max_slides: int = 2
+) -> list[dict[str, str]]:
+    """Extract all text from the first *max_slides* slides via PPTX XML.
+
+    Returns a list of dicts: [{"slide": 1, "text": "..."}, ...]
+    Each entry contains all text found on that slide, concatenated.
+    """
+    results: list[dict[str, str]] = []
+    with zipfile.ZipFile(pptx_path, "r") as zf:
+        slide_names = sorted(
+            n for n in zf.namelist()
+            if n.startswith("ppt/slides/slide") and n.endswith(".xml")
+        )
+        for slide_idx, slide_name in enumerate(slide_names[:max_slides], start=1):
+            slide = etree.fromstring(zf.read(slide_name))
+            # Collect all <a:t> text elements
+            texts = [
+                t.text
+                for t in slide.iter(
+                    "{http://schemas.openxmlformats.org/drawingml/2006/main}t"
+                )
+                if t.text and t.text.strip()
+            ]
+            combined = " ".join(t.strip() for t in texts)
+            results.append({"slide": slide_idx, "text": combined})
+    return results
 
 
 def list_all_media(pptx_path: str) -> list[str]:
@@ -115,6 +161,10 @@ def extract_title(pptx_path: str) -> str:
       2. First title-shaped placeholder on slide 1
       3. Filename stem as fallback
     """
+    import logging
+    log = logging.getLogger(__name__)
+    log.info("Extracting title from: %s", pptx_path)
+    
     with zipfile.ZipFile(pptx_path, "r") as zf:
         # ── Try document properties ──────────────────────────────────
         if "docProps/core.xml" in zf.namelist():

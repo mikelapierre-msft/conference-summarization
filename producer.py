@@ -16,6 +16,43 @@ from config import (
 
 log = logging.getLogger(__name__)
 
+# Pronunciation overrides: term → spoken alias
+# Add entries here for terms the TTS engine mispronounces.
+PRONUNCIATION_MAP: dict[str, str] = {
+    "PFAS": "pee-faas",
+}
+
+
+def _apply_pronunciations(text: str) -> str:
+    """Replace known terms with SSML <sub> tags for correct pronunciation."""
+    for term, alias in PRONUNCIATION_MAP.items():
+        # Case-insensitive whole-word replacement
+        pattern = re.compile(rf"\b{re.escape(term)}\b", re.IGNORECASE)
+        replacement = f'<sub alias="{alias}">{term}</sub>'
+        text = pattern.sub(replacement, text)
+    return text
+
+
+def _escape_xml(text: str) -> str:
+    """XML-escape plain text."""
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&apos;")
+    )
+
+
+def _escape_text_outside_tags(text: str) -> str:
+    """XML-escape only the text portions, leaving SSML tags untouched."""
+    # Split on XML tags, escape only non-tag segments
+    parts = re.split(r"(<[^>]+>)", text)
+    return "".join(
+        part if part.startswith("<") else _escape_xml(part)
+        for part in parts
+    )
+
 
 def _script_to_ssml(script: str, voice: str, style: str) -> str:
     """Wrap a plain-text script in SSML with configurable voice and style.
@@ -26,13 +63,10 @@ def _script_to_ssml(script: str, voice: str, style: str) -> str:
     paragraphs = [p.strip() for p in re.split(r"\n{2,}", script) if p.strip()]
     body_parts = []
     for para in paragraphs:
-        escaped = (
-            para.replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-            .replace('"', "&quot;")
-            .replace("'", "&apos;")
-        )
+        # Apply pronunciation overrides before escaping so SSML tags stay intact
+        para = _apply_pronunciations(para)
+        # Escape only text outside SSML tags
+        escaped = _escape_text_outside_tags(para)
         body_parts.append(f"        <p>{escaped}</p>")
         body_parts.append('        <break time="600ms"/>')
 
